@@ -46,10 +46,59 @@ t.start();
 
 ---
 
-## 8.2 Thread States
+## 8.2 Estados de un Hilo (Thread States)
 
-1. New
-2. Runnable
-3. Blocked
-4. Waiting
-5. Timed waiting
+Un hilo en Java tiene un ciclo de vida compuesto por **6 estados** (obtenibles mediante `t.getState()`).
+
+### 🔄 El Ciclo de Vida y sus Disparadores (El Cómo):
+
+1. 🌱 **New (Nuevo):** El objeto fue creado (`new Thread(r)`), pero aún no se ha llamado a `.start()`.
+2. 🏃 **Runnable (Ejecutable):** Se llamó a `.start()`. **Ojo:** No garantiza que el código se esté ejecutando en ese milisegundo; significa que está listo y esperando que el *Thread Scheduler* le asigne un fragmento de tiempo de CPU.
+3. 🛑 **Blocked (Bloqueado):** El hilo intentó acceder a un recurso bloqueado por otro hilo (ej. un *lock*). Se queda inactivo hasta que el recurso se libere.
+4. ⏳ **Waiting (Esperando):** El hilo se pausa indefinidamente esperando una señal de otro hilo. 
+   * *Se activa con:* `Object.wait()` o `Thread.join()`.
+5. ⏱️ **Timed Waiting (Espera temporizada):** Espera a otro hilo, pero con un límite de tiempo máximo. 
+   * *Se activa con:* `Thread.sleep(1000)`, `Object.wait(1000)` o `Thread.join(1000)`.
+6. 💀 **Terminated (Terminado):** El método `run()` terminó exitosamente o murió por una excepción no capturada.
+
+---
+
+### 🧠 Conceptos Avanzados de Planificación (Java 21+)
+¿Cómo decide la máquina a qué hilo darle la CPU?
+* **Hilos de Plataforma (Tradicionales):** Usan planificación *Preventiva* (*Preemptive*). El Sistema Operativo les asigna un tiempo máximo y los interrumpe forzosamente cuando se acaba.
+* **Hilos Virtuales:** Usan planificación *Cooperativa*. El hilo no es interrumpido por el SO; él mismo cede el control cuando se bloquea o llama explícitamente a `Thread.yield()`.
+
+> ⚠️ **El Peligro de "Matar" Hilos:**
+> Nunca uses los métodos obsoletos `.stop()`, `.suspend()` o `.resume()`. Matar un hilo de forma abrupta corrompe los datos compartidos. La forma segura de detener un hilo es de manera cooperativa, pidiéndole que termine (usualmente mediante el manejo de `InterruptedException`).
+
+## 8.3 Propiedades de los Hilos
+
+### 8.3.1 Hilos de Plataforma vs. Virtuales (Java 21+)
+* **Hilos de Plataforma:** Son los tradicionales del SO. Son muy **pesados** (consumen mucha RAM y CPU al crearse). Si una app web recibe miles de peticiones, el servidor colapsa si asigna un hilo por petición.
+* **Hilos Virtuales:** Son gestionados por la JVM, no por el SO. Son extremadamente **ligeros**. Puedes tener millones de ellos montados sobre unos pocos hilos de plataforma (llamados *carrier threads*).
+  * **El Por Qué:** Permiten escribir código bloqueante tradicional (fácil de leer) con el rendimiento de la programación asíncrona (evitando el infierno de los *callbacks*).
+  * **El Cómo:** `Thread.startVirtualThread(r);`
+
+### 8.3.2 Interrupción de Hilos (Pidiendo que se detengan)
+En Java, **no puedes forzar o "matar" a un hilo**. Debes *solicitarle* amablemente que se detenga usando `t.interrupt()`.
+
+**¿Qué hace internamente `interrupt()`?**
+1. Si el hilo está ejecutando código normal, simplemente cambia una bandera booleana interna a `true`.
+2. Si el hilo está bloqueado o durmiendo (ej. `Thread.sleep()`), lo despierta bruscamente y lanza una `InterruptedException` (limpiando la bandera booleana).
+
+**El Cómo (Diseñando tareas interrumpibles):**
+Si tu hilo hace un trabajo largo, debe estar diseñado para escuchar interrupciones:
+```java
+Runnable r = () -> {
+    try {
+        // Verificar constantemente si alguien pidió detenerse
+        while (!Thread.currentThread().isInterrupted() && masTrabajoPorHacer) {
+            hacerTrabajo(); // Lógica pesada
+            Thread.sleep(1000); // Esto lanzará excepción si lo interrumpen
+        }
+    } catch (InterruptedException e) {
+        // El hilo fue interrumpido mientras dormía. Terminar de forma segura.
+    } finally {
+        // Liberar recursos, cerrar bases de datos, etc.
+    }
+};
