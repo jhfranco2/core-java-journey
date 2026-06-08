@@ -1,0 +1,9 @@
+# Archivos compilados
+*.class
+bin/
+out/
+
+# Configuraciones locales del editor
+.vscode/
+.idea/
+*.log
