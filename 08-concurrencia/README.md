@@ -102,3 +102,37 @@ Runnable r = () -> {
         // Liberar recursos, cerrar bases de datos, etc.
     }
 };
+```
+
+---
+
+### 8.3.3 Hilos Demonio (Daemon Threads)
+
+Un hilo demonio es un hilo de servicio en segundo plano que existe únicamente para asistir a otros hilos (ej. limpiar caché, recolector de basura, temporizadores). 
+
+* **El Por Qué:** La Máquina Virtual de Java (JVM) se apaga automáticamente cuando los únicos hilos que quedan ejecutándose son demonios. Sirven para tareas infinitas que no deberían impedir que el programa termine.
+
+* **El Cómo:**
+```java
+Thread t = new Thread(tarea);
+t.setDaemon(true); // Lo convierte en Demonio
+t.start();
+```
+
+> ⚠️ **Peligros y Gotchas:**
+> 1. **Orden estricto:** El método `setDaemon(true)` **debe** llamarse antes de `start()`. Si lo llamas después, lanzará una `IllegalThreadStateException`.
+> 2. **Peligro de datos:** Como la JVM mata a los demonios abruptamente al apagarse, **nunca** uses hilos demonio para operaciones de entrada/salida (I/O) como escribir en una base de datos o en un archivo. Podrían dejar la información corrupta.
+> 3. **Hilos Virtuales:** En Java 21+, *todos* los hilos virtuales son demonios por naturaleza. Intentar hacer `setDaemon(false)` en ellos no tiene ningún efecto.
+
+---
+
+### 8.3.4 Nombres e IDs de Hilos
+
+A los hilos se les puede asignar un nombre legible para facilitar la depuración (*debugging*) y leer mejor los registros (*logs*) o los *thread dumps* cuando la aplicación falla.
+
+* **El Cómo:**
+```java
+Thread t = new Thread(tarea);
+t.setName("Limpiador-Cache-1"); // Asigna un nombre humano
+long id = t.threadId(); // Obtiene el ID numérico único del hilo
+```
