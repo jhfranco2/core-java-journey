@@ -212,7 +212,7 @@ Thread.Builder builder = Thread.ofVirtual()
 // 2. Extraemos la fábrica a partir de esa plantilla
 ThreadFactory factory = builder.factory();
 
-// 3. Producimos hilos en masa (se llamarán peticion-web-1, peticion-web-2...)
+// 3. Producimos hilos en masa (se llamarían peticion-web-1, peticion-web-2...)
 Thread t1 = factory.newThread(miRunnable1);
 Thread t2 = factory.newThread(miRunnable2);
 ```
@@ -223,6 +223,93 @@ Thread t2 = factory.newThread(miRunnable2);
 
 En aplicaciones concurrentes, es muy común dividir un problema grande en múltiples subtareas más pequeñas, ejecutarlas en paralelo, y luego coordinarlas para combinar sus resultados cuando estén listas.
 
-### 8.4.1 Introducción: La limitación de `Runnable`
-Hasta ahora hemos usado la interfaz `Runnable` para pasarle tareas a los hilos.
-> ⚠️ **El Problema:** La firma del método en `Runnable` es `public void run()`. Dado que devuelve `void`, un hilo puro no tiene forma natural de comunicarle a la aplicación el resultado de su cálculo. Para solucionar esto, Java provee las interfaces `Callable` y `Future`.
+### 8.4.1 Callables y Futures
+
+Un `Runnable` encapsula una tarea asíncrona que no devuelve nada (`void`). Cuando necesitamos que un hilo calcule algo y nos devuelva el resultado, usamos la interfaz `Callable<V>`.
+
+* **`Callable<V>`:** Es la tarea parametrizada que retorna un valor de tipo `V` y puede lanzar excepciones.
+* **`Future<V>`:** Es el "recibo" o "promesa" que te entregan inmediatamente al programar la tarea. Lo usas para reclamar el resultado en el futuro.
+
+* **El Cómo (Ejecutando un Callable manualmente con FutureTask):**
+```java
+// 1. Definimos la tarea que retorna un valor
+Callable<Integer> tareaPesada = () -> {
+    Thread.sleep(2000); // Simulamos trabajo
+    return 42;
+};
+
+// 2. Envolvemos el Callable en un FutureTask (que implementa Runnable y Future)
+FutureTask<Integer> futureTask = new FutureTask<>(tareaPesada);
+
+// 3. Lo ejecutamos en un hilo de bajo nivel de forma manual
+new Thread(futureTask).start();
+
+// 4. Obtenemos el resultado
+Integer resultado = futureTask.get(); // ⚠️ ¡OJO! Esto bloquea el hilo actual hasta que termine
+```
+
+> ⚠️ **Peligros y Gotchas:**
+> * **El Bloqueo de `get()`:** Si llamas a `future.get()` inmediatamente después de iniciar el hilo, paralizas el programa y anulas el propósito de la asincronía. Haz todo tu trabajo independiente primero, y llama a `get()` solo cuando sea estrictamente necesario.
+> * **La Ilusión de Cancelación:** Con el método `cancel(true)`, no detienes la tarea por arte de magia. Solamente le envías una señal de interrupción al hilo. El código de tu tarea debe monitorear cooperativamente `Thread.currentThread().isInterrupted()`.
+
+---
+
+### 8.4.2 Executors (Thread Pools estructurados)
+
+Crear hilos de plataforma tradicionales es costoso porque requiere interactuar con el SO. Para gestionar hilos a nivel industrial y limitar la sobrecarga, Java provee **Thread Pools (Piscinas de Hilos)** controlados por un objeto `Executor`. Al enviar tareas, los hilos se reutilizan en lugar de destruirse.
+
+#### 🛠️ Tipos de Pools Comunes (Clase `Executors`)
+
+| Método | Descripción |
+| :--- | :--- |
+| `newCachedThreadPool()` | Crea hilos bajo demanda de forma ilimitada. Elimina hilos ociosos tras 60s. **Peligro:** Puede agotar la RAM bajo carga masiva. |
+| `newFixedThreadPool(int n)` | Mantiene un tamaño fijo y controlado de hilos. Tareas extras van a una cola interna. |
+| `newSingleThreadExecutor()` | Un único hilo secuencial. Útil para aislar métricas de rendimiento. |
+| `newVirtualThreadPerTaskExecutor()`| Crea un **nuevo hilo virtual** por cada tarea enviada. |
+
+#### 📤 Enviando Tareas (`submit`)
+Para entregar tareas al *pool*, usas el método `submit`, el cual te devolverá un `Future`:
+```java
+Future<T> submit(Callable<T> task)
+Future<?> submit(Runnable task)
+Future<T> submit(Runnable task, T result)
+```
+
+#### 🚦 Throttling en Hilos Virtuales (El Gotcha Moderno)
+Si usas hilos virtuales, **NUNCA** debes agruparlos en un *Thread Pool*. El problema es que sin un pool fijo, si llegan miles de peticiones simultáneas, podrías colapsar servicios externos que tienen límites (como una Base de Datos o un API). 
+Para solucionar esto, limitas el tráfico en el punto de presión utilizando un **Semáforo (`Semaphore`)**:
+
+```java
+private static final int CONCURRENT_REQUESTS = 200;
+private static final Semaphore SEMAPHORE = new Semaphore(CONCURRENT_REQUESTS);
+
+public static String get(URI uri) throws InterruptedException, IOException {
+    var request = HttpRequest.newBuilder().uri(uri).GET().build();
+    SEMAPHORE.acquire(); // El hilo virtual se pausa aquí eficientemente si ya hay 200 activos
+    try {
+        return client.send(request, HttpResponse.BodyHandlers.ofString()).body();
+    } finally {
+        SEMAPHORE.release(); // Siempre liberar el permiso en el finally
+    }
+}
+```
+
+#### 🔄 Ciclo de vida y Apagado
+Debes apagar el executor cuando ya no quieras enviar más tareas. 
+
+**Forma Moderna (Java 19+):** Usando `try-with-resources`. El método `.close()` se llama automáticamente en la llave de cierre y **bloquea** el hilo actual hasta que terminen todas las tareas del pool.
+```java
+try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    Future<V> f = executor.submit(myCallable);
+    // ...
+} // El método executor.close() es llamado aquí
+```
+
+**Forma Legacy (Código Antiguo):** En código viejo encontrarás estos dos métodos para apagar el pool manualmente:
+```java
+executor.shutdown(); // Deja de aceptar tareas nuevas (No bloquea el hilo principal)
+executor.awaitTermination(10, TimeUnit.MINUTES); // Bloquea hasta que terminen las pendientes
+```
+
+> ⚠️ **Precaución (Excepciones en los Pools):**
+> Cuando un executor usa hilos de una fábrica (`ThreadFactory`), establecer el manejador de excepciones no capturadas (*uncaught exception handler*) de esa fábrica no tiene ningún efecto. Los thread pools atrapan internamente las excepciones de las tareas y te las devuelven dentro de un `ExecutionException` cuando llamas a `future.get()`.
